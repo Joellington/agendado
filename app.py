@@ -12,33 +12,30 @@ db = TinyDB('database.json')
 
 # --- ROBÔ DE DISPARO ---
 def bot_worker():
-    print("🤖 Robô de disparos iniciado...")
+    print("🤖 Robô de monitoramento iniciado...")
     while True:
         try:
-            # Pega o timestamp atual
             now = datetime.now().timestamp() * 1000
             Job = Query()
             
-            # Busca jobs que NÃO foram enviados e que já estão no horário (ou atrasados)
-            # Simplifiquei a busca para evitar erros com campos inexistentes
-            all_data = db.all()
-            pending_jobs = [j for j in all_data if j.get('sent') == False and j.get('time', 9999999999999) <= now]
+            # Busca mensagens não enviadas que já estão no horário
+            all_jobs = db.all()
+            pending_jobs = [j for j in all_jobs if j.get('sent') == False and j.get('time') <= now]
 
             for job in pending_jobs:
-                print(f"🚀 Tentando enviar mensagem agendada para agora...")
+                print(f"🚀 Disparando agendamento {job['id']}...")
                 success = send_telegram(job)
                 if success:
                     db.update({'sent': True}, Job.id == job['id'])
-                    print(f"✅ Mensagem enviada com sucesso!")
+                    print("✅ Sucesso!")
                 else:
-                    # Se falhou, marca como enviado para não travar o robô, 
-                    # ou você pode implementar uma lógica de tentativa depois.
+                    # Marcamos como True para não travar o robô em uma mensagem errada
                     db.update({'sent': True}, Job.id == job['id'])
-                    print(f"❌ Falha crítica no envio. Verifique o Token/ID.")
+                    print("❌ Falha no envio (verifique o token e ID do canal no Admin)")
         except Exception as e:
-            print(f"⚠️ Erro no loop do robô: {e}")
+            print(f"⚠️ Erro no robô: {e}")
         
-        time.sleep(5) # Checa a cada 5 segundos
+        time.sleep(5)
 
 def send_telegram(job):
     token = job.get('token')
@@ -47,7 +44,6 @@ def send_telegram(job):
     url = f"https://api.telegram.org/bot{token}/"
     
     try:
-        # Se houver foto
         if job.get('photo'):
             header, encoded = job['photo'].split(",", 1)
             data = base64.b64decode(encoded)
@@ -59,14 +55,14 @@ def send_telegram(job):
             r = requests.post(url + "sendMessage", data=payload)
         
         if r.status_code != 200:
-            print(f"🔴 Erro do Telegram: {r.text}")
+            print(f"🔴 Resposta Telegram: {r.text}")
             return False
         return True
     except Exception as e:
         print(f"🔴 Erro de conexão: {e}")
         return False
 
-# --- API ---
+# --- ROTAS API ---
 @app.route('/')
 def index():
     return render_template_string(HTML_CODE)
@@ -84,8 +80,6 @@ def manage_profiles():
 @app.route('/api/jobs')
 def get_jobs():
     user = request.args.get('user')
-    Job = Query()
-    # Retorna apenas agendamentos do usuário logado que ainda não foram enviados
     res = [j for j in db.all() if j.get('user') == user and j.get('sent') == False]
     return jsonify(res)
 
@@ -116,7 +110,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Marketing Pro</title>
+    <title>Bot Telegram VIP</title>
     <style>
         :root { --primary: #0088cc; --bg: #f0f2f5; }
         body { font-family: 'Segoe UI', sans-serif; background: var(--bg); margin: 0; padding: 10px; }
@@ -129,65 +123,72 @@ HTML_CODE = """
         .btn-blue { background: var(--primary); color: white; }
         .btn-outline { background: white; border: 2px solid var(--primary); color: var(--primary); margin-bottom: 10px; }
         .btn-admin { background: #6c757d; color: white; margin-top: 10px; }
+        .phrase-box { background: #f8f9fa; border: 1px solid #eee; padding: 10px; max-height: 100px; overflow-y: auto; margin-bottom: 10px; border-radius: 8px; }
+        .phrase-item { font-size: 12px; padding: 6px; border-bottom: 1px solid #eee; cursor: pointer; color: #444; }
+        .phrase-item:hover { color: var(--primary); }
         .job-card { border-left: 4px solid var(--primary); padding: 10px; background: #fff; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
 <div class="card">
-    <div class="header"><h2>Marketing Automático</h2></div>
+    <div class="header"><h2>Telegram Marketing</h2></div>
     <div class="p-20">
         
-        <!-- LOGIN -->
+        <!-- SELEÇÃO PERFIL -->
         <div id="screen-login">
-            <h3 style="text-align:center">Escolha seu Perfil</h3>
+            <h3>Escolha seu Perfil:</h3>
             <div id="profile-container"></div>
             <hr>
             <input type="text" id="new-profile-name" placeholder="Nome do novo perfil">
-            <button class="btn-blue" onclick="addProfile()">+ Novo Perfil</button>
-            <button class="btn-admin" onclick="openAdmin()">🛡️ Configurações Master</button>
+            <button class="btn-blue" onclick="addProfile()">+ Adicionar Perfil</button>
+            <button class="btn-admin" onclick="openAdmin()">🛡️ Admin Master</button>
         </div>
 
         <!-- ADMIN -->
         <div id="screen-admin" class="hidden">
-            <h3>Configurar Bot Principal</h3>
-            <label>Token:</label><input type="password" id="cfg-token">
-            <label>ID do Canal:</label><input type="text" id="cfg-chat">
-            <button class="btn-blue" onclick="saveAdmin()">SALVAR</button>
+            <h3>Configurações Globais</h3>
+            <label>Token do Bot:</label><input type="password" id="cfg-token">
+            <label>ID do Canal (ex: -100...):</label><input type="text" id="cfg-chat">
+            <button class="btn-blue" onclick="saveAdmin()">SALVAR AGORA</button>
             <button class="btn-admin" onclick="location.reload()">VOLTAR</button>
         </div>
 
-        <!-- DASHBOARD -->
+        <!-- USUÁRIO -->
         <div id="screen-user" class="hidden">
             <div style="display:flex; justify-content: space-between; align-items: center;">
                 <strong id="user-display"></strong>
-                <button onclick="location.reload()" style="width:auto; padding:5px;">Sair</button>
+                <button onclick="location.reload()" style="width:auto; padding:5px 10px;">Sair</button>
             </div>
             <hr>
             
-            <textarea id="msg-text" rows="3" placeholder="Mensagem principal..."></textarea>
-            <input type="text" id="link-text" placeholder="Texto do Link (opcional)">
-            <input type="url" id="link-url" placeholder="https://link-do-seu-afiliado.com (opcional)">
+            <label>Frases Prontas (clique para usar):</label>
+            <div class="phrase-box" id="phrases-list"></div>
+            
+            <textarea id="msg-text" rows="3" placeholder="Sua mensagem..."></textarea>
+            <input type="text" id="link-text" placeholder="Texto do botão (Link)">
+            <input type="url" id="link-url" placeholder="https://seu-link.com">
             
             <label>Foto:</label>
             <input type="file" id="msg-photo" accept="image/*">
             
             <div style="display:flex; gap:10px;">
                 <div style="flex:1"><label>Início:</label><input type="datetime-local" id="msg-date"></div>
-                <div style="flex:1"><label>Total de Envios:</label><input type="number" id="msg-total-count" value="1"></div>
+                <div style="flex:1"><label>Qtd de Envios:</label><input type="number" id="msg-total" value="1"></div>
             </div>
             
-            <label>Intervalo:</label>
-            <select id="msg-freq">
-                <option value="30s">A cada 30 segundos</option>
-                <option value="1m">A cada 1 minuto</option>
-                <option value="5m">A cada 5 minutos</option>
-                <option value="1">1 vez ao dia</option>
-                <option value="24">24 vezes ao dia (1h em 1h)</option>
-            </select>
+            <label>Intervalo entre cada envio:</label>
+            <div style="display:flex; gap:5px;">
+                <input type="number" id="freq-val" value="1" style="flex:1">
+                <select id="freq-unit" style="flex:1">
+                    <option value="s">Segundos</option>
+                    <option value="m">Minutos</option>
+                    <option value="h">Horas</option>
+                </select>
+            </div>
             
             <button class="btn-blue" onclick="schedule()">PROGRAMAR DISPAROS</button>
             
-            <h4 style="margin-top:20px;">Minha Fila de Envios:</h4>
+            <h4 style="margin-top:20px;">Fila Pendente:</h4>
             <div id="history"></div>
         </div>
 
@@ -197,6 +198,14 @@ HTML_CODE = """
 <script>
     let currentUser = "";
     let config = {};
+    const frasesProntas = [
+        "🚀 Venha conferir essa oportunidade única!",
+        "💰 BÔNUS DE 100% PARA NOVOS USUÁRIOS!",
+        "🚨 ÚLTIMAS VAGAS! Não perca.",
+        "💎 Estratégia VIP liberada. Veja!",
+        "🔥 O mercado está pagando muito hoje!",
+        "⚠️ Atenção: Link expira em breve!"
+    ];
 
     window.onload = loadProfiles;
 
@@ -246,11 +255,20 @@ HTML_CODE = """
 
     async function openUser(name) {
         config = await fetch('/api/config').then(r => r.json());
-        if(!config.token) return alert("Configure o Bot no Admin!");
+        if(!config.token) return alert("Erro: Admin não configurou o Bot!");
         currentUser = name;
         document.getElementById('screen-login').classList.add('hidden');
         document.getElementById('screen-user').classList.remove('hidden');
         document.getElementById('user-display').innerText = "Perfil: " + name;
+        
+        // Carregar frases
+        const list = document.getElementById('phrases-list');
+        list.innerHTML = "";
+        frasesProntas.forEach(f => {
+            let d = document.createElement('div'); d.className = 'phrase-item'; d.innerText = f;
+            d.onclick = () => document.getElementById('msg-text').value = f;
+            list.appendChild(d);
+        });
         updateHistory();
     }
 
@@ -258,23 +276,21 @@ HTML_CODE = """
         const file = document.getElementById('msg-photo').files[0];
         const photo = file ? await toBase64(file) : null;
         const startInput = document.getElementById('msg-date').value;
-        if(!startInput) return alert("Escolha a data de início!");
+        if(!startInput) return alert("Selecione data e hora!");
 
         const start = new Date(startInput).getTime();
-        const total = parseInt(document.getElementById('msg-total-count').value);
-        const freq = document.getElementById('msg-freq').value;
+        const total = parseInt(document.getElementById('msg-total').value);
+        const freqVal = parseFloat(document.getElementById('freq-val').value);
+        const freqUnit = document.getElementById('freq-unit').value;
         
-        let interval = 0;
-        if(freq === "30s") interval = 30 * 1000;
-        else if(freq === "1m") interval = 60 * 1000;
-        else if(freq === "5m") interval = 5 * 60 * 1000;
-        else interval = (24 / parseInt(freq)) * 60 * 60 * 1000;
+        let interval = freqVal * 1000;
+        if(freqUnit === 'm') interval *= 60;
+        if(freqUnit === 'h') interval *= 3600;
 
         const baseText = document.getElementById('msg-text').value;
         const lText = document.getElementById('link-text').value;
         const lUrl = document.getElementById('link-url').value;
         
-        // Só monta o link se ambos os campos estiverem preenchidos
         let finalText = baseText;
         if(lText && lUrl) {
             finalText += `\\n\\n<a href="${lUrl}">${lText}</a>`;
@@ -297,7 +313,7 @@ HTML_CODE = """
                 body: JSON.stringify(data)
             });
         }
-        alert("Envios Agendados!"); 
+        alert("Agendado com sucesso!"); 
         updateHistory();
     }
 
@@ -308,7 +324,7 @@ HTML_CODE = """
         jobs.sort((a,b) => a.time - b.time).forEach(j => {
             div.innerHTML += `<div class="job-card">
                 <span>📅 ${new Date(j.time).toLocaleString()}</span>
-                <button onclick="delJob(${j.id})" style="background:red; color:white; border:none; padding:5px; border-radius:5px;">🗑️</button>
+                <button onclick="delJob(${j.id})" style="background:red; color:white; border:none; padding:5px 8px; border-radius:5px;">🗑️</button>
             </div>`;
         });
     }
