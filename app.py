@@ -10,26 +10,30 @@ from datetime import datetime
 app = Flask(__name__)
 db = TinyDB('database.json')
 
-# --- ROBÔ DE DISPARO (SIMPLIFICADO E DIRETO) ---
+# --- ROBÔ DE DISPARO (O MAIS SIMPLES POSSÍVEL PARA NÃO FALHAR) ---
 def bot_worker():
-    print("🤖 Robô ligado e monitorando...")
+    print("🤖 Robô Iniciado...")
     while True:
         try:
             now = datetime.now().timestamp() * 1000
-            # Busca tudo que não foi enviado
+            Job = Query()
+            # O robô varre o banco e pega TUDO que não foi enviado e já passou da hora
             for job in db.all():
                 if job.get('sent') == False and job.get('time', 0) <= now:
-                    print(f"🚀 Enviando agora: {job.get('id')}")
+                    print(f"🚀 Tentando enviar job: {job.get('id')}")
+                    
+                    # Tenta enviar
                     success = send_telegram(job)
+                    
                     if success:
-                        db.update({'sent': True}, Query().id == job['id'])
-                        print("✅ Enviado!")
+                        db.update({'sent': True}, Job.id == job['id'])
+                        print("✅ Sucesso!")
                     else:
-                        # Se der erro, marcamos como enviado para não travar o robô
-                        db.update({'sent': True}, Query().id == job['id'])
-                        print("❌ Falha no envio (Token ou ID inválido)")
+                        # Se der erro (token ou id errado), marcamos como enviado para não travar a fila
+                        db.update({'sent': True}, Job.id == job['id'])
+                        print("❌ Falha no envio (verifique Token/ID no Admin)")
         except Exception as e:
-            print(f"⚠️ Erro no robô: {e}")
+            print(f"⚠️ Erro no Robô: {e}")
         time.sleep(5)
 
 def send_telegram(job):
@@ -40,20 +44,22 @@ def send_telegram(job):
     
     try:
         if job.get('photo'):
+            # Envio com Foto
             header, encoded = job['photo'].split(",", 1)
             data = base64.b64decode(encoded)
             files = {'photo': ('image.jpg', data)}
             payload = {'chat_id': chat_id, 'caption': text, 'parse_mode': 'HTML'}
-            r = requests.post(url + "sendPhoto", data=payload, files=files)
+            r = requests.post(url + "sendPhoto", data=payload, files=files, timeout=15)
         else:
+            # Envio só Texto
             payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
-            r = requests.post(url + "sendMessage", data=payload)
+            r = requests.post(url + "sendMessage", data=payload, timeout=15)
         
         return r.status_code == 200
     except:
         return False
 
-# --- API ---
+# --- ROTAS DA API ---
 @app.route('/')
 def index():
     return render_template_string(HTML_CODE)
@@ -66,12 +72,12 @@ def manage_profiles():
         if not db.search((P.type == 'profile') & (P.name == name)):
             db.insert({'type': 'profile', 'name': name})
         return jsonify({"ok": True})
-    return jsonify(db.search(P.type == 'profile'))
+    return jsonify(db.search(Query().type == 'profile'))
 
 @app.route('/api/jobs')
 def get_jobs():
     user = request.args.get('user')
-    # Filtra jobs do usuário que não foram enviados
+    # Retorna apenas o que pertence ao perfil e não foi enviado
     res = [j for j in db.all() if j.get('user') == user and j.get('sent') == False]
     return jsonify(res)
 
@@ -95,7 +101,7 @@ def manage_config():
     res = db.search(C.type == 'config')
     return jsonify(res[0] if res else {"token": "", "chat": ""})
 
-# --- HTML ---
+# --- HTML COMPLETO ---
 HTML_CODE = """
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -116,55 +122,59 @@ HTML_CODE = """
         .btn-outline { background: white; border: 2px solid var(--primary); color: var(--primary); margin-bottom: 10px; }
         .btn-admin { background: #6c757d; color: white; margin-top: 10px; }
         .phrase-box { background: #f8f9fa; border: 1px solid #eee; padding: 10px; max-height: 100px; overflow-y: auto; margin-bottom: 10px; border-radius: 8px; }
-        .phrase-item { font-size: 12px; padding: 6px; border-bottom: 1px solid #eee; cursor: pointer; color: #444; }
+        .phrase-item { font-size: 13px; padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
         .job-card { border-left: 4px solid var(--primary); padding: 10px; background: #fff; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
 <div class="card">
-    <div class="header"><h2>Marketing Automático</h2></div>
+    <div class="header"><h2>Telegram Marketing</h2></div>
     <div class="p-20">
         
+        <!-- TELA 1: LOGIN/PERFIS -->
         <div id="screen-login">
-            <h3>Escolha seu Perfil:</h3>
+            <h3 style="text-align:center">Selecione seu Perfil</h3>
             <div id="profile-container"></div>
             <hr>
-            <input type="text" id="new-profile-name" placeholder="Nome do novo perfil">
-            <button class="btn-blue" onclick="addProfile()">+ Criar Perfil</button>
+            <input type="text" id="new-profile-name" placeholder="Nome do novo perfil...">
+            <button class="btn-blue" onclick="addProfile()">+ Criar Novo Perfil</button>
             <button class="btn-admin" onclick="openAdmin()">🛡️ Configurações Master</button>
         </div>
 
+        <!-- TELA 2: ADMIN -->
         <div id="screen-admin" class="hidden">
-            <h3>Configurações do Bot</h3>
-            <label>Token:</label><input type="password" id="cfg-token">
-            <label>ID do Canal:</label><input type="text" id="cfg-chat">
-            <button class="btn-blue" onclick="saveAdmin()">SALVAR</button>
+            <h3>Configurações Globais</h3>
+            <label>Token do Bot:</label><input type="password" id="cfg-token">
+            <label>ID do Canal (ex: -100...):</label><input type="text" id="cfg-chat">
+            <button class="btn-blue" onclick="saveAdmin()">SALVAR CONFIGURAÇÃO</button>
             <button class="btn-admin" onclick="location.reload()">VOLTAR</button>
         </div>
 
+        <!-- TELA 3: DASHBOARD USUÁRIO -->
         <div id="screen-user" class="hidden">
             <div style="display:flex; justify-content: space-between; align-items: center;">
                 <strong id="user-display"></strong>
-                <button onclick="location.reload()" style="width:auto; padding:5px;">Sair</button>
+                <button onclick="location.reload()" style="width:auto; padding:5px 10px;">Sair</button>
             </div>
             <hr>
             
-            <label>Frases Prontas:</label>
+            <label>Frases Prontas (Clique para usar):</label>
             <div class="phrase-box" id="phrases-list"></div>
             
-            <textarea id="msg-text" rows="3" placeholder="Sua mensagem..."></textarea>
-            <input type="text" id="link-text" placeholder="Texto do Link">
-            <input type="url" id="link-url" placeholder="https://seu-link.com">
+            <textarea id="msg-text" rows="3" placeholder="Sua mensagem principal..."></textarea>
             
-            <label>Foto:</label>
+            <input type="text" id="link-text" placeholder="Texto que vira link (Ex: CLIQUE AQUI)">
+            <input type="url" id="link-url" placeholder="https://seu-link-afiliado.com">
+            
+            <label>Foto da Galeria:</label>
             <input type="file" id="msg-photo" accept="image/*">
             
             <div style="display:flex; gap:10px;">
                 <div style="flex:1"><label>Início:</label><input type="datetime-local" id="msg-date"></div>
-                <div style="flex:1"><label>Total Envios:</label><input type="number" id="msg-total" value="1"></div>
+                <div style="flex:1"><label>Qtd de Envios:</label><input type="number" id="msg-total" value="1"></div>
             </div>
             
-            <label>Enviar a cada:</label>
+            <label>Intervalo Personalizado:</label>
             <div style="display:flex; gap:5px;">
                 <input type="number" id="freq-val" value="30" style="flex:1">
                 <select id="freq-unit" style="flex:1">
@@ -176,9 +186,10 @@ HTML_CODE = """
             
             <button class="btn-blue" onclick="schedule()">PROGRAMAR DISPAROS</button>
             
-            <h4 style="margin-top:20px;">Minha Fila de Envios:</h4>
+            <h4 style="margin-top:20px;">Fila de Envios (Pendente):</h4>
             <div id="history"></div>
         </div>
+
     </div>
 </div>
 
@@ -186,7 +197,12 @@ HTML_CODE = """
     let currentUser = "";
     let config = {};
     const frasesProntas = [
-        "🚀 Oportunidade única!", "💰 BÔNUS DE 100% LIBERADO!", "🚨 ÚLTIMAS VAGAS!", "🔥 O mercado está pagando!", "💎 Estratégia VIP!", "⚠️ Link expira em breve!"
+        "🚀 Venha conferir essa oportunidade única!",
+        "💰 BÔNUS DE 100% PARA NOVOS USUÁRIOS!",
+        "🚨 ÚLTIMAS VAGAS! Não perca.",
+        "💎 Estratégia VIP liberada. Veja!",
+        "🔥 O mercado está pagando muito hoje!",
+        "🎯 Aproveite a promoção agora!"
     ];
 
     window.onload = loadProfiles;
@@ -207,12 +223,16 @@ HTML_CODE = """
     async function addProfile() {
         const name = document.getElementById('new-profile-name').value;
         if(!name) return;
-        await fetch('/api/profiles', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name}) });
+        await fetch('/api/profiles', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name})
+        });
         location.reload();
     }
 
     async function openAdmin() {
-        if(prompt("Senha:") === "123456") {
+        if(prompt("Senha Master:") === "123456") {
             document.getElementById('screen-login').classList.add('hidden');
             document.getElementById('screen-admin').classList.remove('hidden');
             const res = await fetch('/api/config').then(r => r.json());
@@ -222,13 +242,21 @@ HTML_CODE = """
     }
 
     async function saveAdmin() {
-        await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: document.getElementById('cfg-token').value, chat: document.getElementById('cfg-chat').value}) });
-        alert("Configuração Salva!"); location.reload();
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                token: document.getElementById('cfg-token').value, 
+                chat: document.getElementById('cfg-chat').value
+            })
+        });
+        alert("Salvo!"); location.reload();
     }
 
     async function openUser(name) {
         config = await fetch('/api/config').then(r => r.json());
-        if(!config.token) return alert("Configure o Bot no Admin!");
+        if(!config.token) return alert("Erro: O Admin não configurou o BOT!");
+        
         currentUser = name;
         document.getElementById('screen-login').classList.add('hidden');
         document.getElementById('screen-user').classList.remove('hidden');
@@ -245,11 +273,11 @@ HTML_CODE = """
     }
 
     async function schedule() {
+        const startInput = document.getElementById('msg-date').value;
+        if(!startInput) return alert("Selecione data/hora!");
+
         const file = document.getElementById('msg-photo').files[0];
         const photo = file ? await toBase64(file) : null;
-        const startInput = document.getElementById('msg-date').value;
-        if(!startInput) return alert("Selecione data e hora!");
-
         const start = new Date(startInput).getTime();
         const total = parseInt(document.getElementById('msg-total').value);
         const freqVal = parseFloat(document.getElementById('freq-val').value);
@@ -262,8 +290,12 @@ HTML_CODE = """
         const baseText = document.getElementById('msg-text').value;
         const lText = document.getElementById('link-text').value;
         const lUrl = document.getElementById('link-url').value;
+        
+        // Monta o texto com link HTML apenas se preenchido corretamente
         let finalText = baseText;
-        if(lText && lUrl) finalText += `\\n\\n<a href="${lUrl}">${lText}</a>`;
+        if(lText && lUrl) {
+            finalText += `\\n\\n<a href="${lUrl}">${lText}</a>`;
+        }
 
         for(let i=0; i<total; i++) {
             const data = {
@@ -276,7 +308,11 @@ HTML_CODE = """
                 photo: photo,
                 sent: false
             };
-            await fetch('/api/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+            await fetch('/api/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
         }
         alert("Agendado!"); updateHistory();
     }
@@ -288,13 +324,17 @@ HTML_CODE = """
         jobs.sort((a,b) => a.time - b.time).forEach(j => {
             div.innerHTML += `<div class="job-card">
                 <span>📅 ${new Date(j.time).toLocaleString()}</span>
-                <button onclick="delJob(${j.id})" style="background:red; color:white; border:none; padding:5px 8px; border-radius:5px;">🗑️</button>
+                <button onclick="delJob(${j.id})" style="background:red; color:white; border:none; padding:5px 10px; border-radius:5px;">🗑️</button>
             </div>`;
         });
     }
 
     async function delJob(id) {
-        await fetch('/api/delete', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}) });
+        await fetch('/api/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id})
+        });
         updateHistory();
     }
 
