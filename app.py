@@ -4,48 +4,50 @@ from tinydb import TinyDB, Query
 from datetime import datetime
 
 app = Flask(__name__)
+# O banco de dados agora recarrega a cada consulta para não perder agendamentos
 db = TinyDB('database.json')
 
-# --- ROBÔ DE DISPARO (CORAÇÃO DO AGENDAMENTO) ---
+# --- ROBÔ DE DISPARO (VERSÃO BLINDADA) ---
 def bot_worker():
-    print("🤖 Robô de Agendamento Online e Vigilante...")
+    print("🤖 Robô de Agendamento iniciado e monitorando a fila...")
     while True:
         try:
-            # Pega o tempo exato de AGORA em milissegundos
+            # Pega o tempo atual em milissegundos (Tempo Universal)
             now_ms = int(time.time() * 1000)
             
-            # Recarrega o banco para garantir que pegou novos agendamentos
-            all_jobs = db.all()
+            # Recarrega o banco forçadamente
+            all_items = db.all()
             
-            # Filtra mensagens: Tipo Job + Não Enviada + Hora chegou ou passou
-            pending = [j for j in all_jobs if j.get('type') == 'job' and j.get('sent') == False and int(j.get('time', 0)) <= now_ms]
-
-            if pending:
-                print(f"⏰ {len(pending)} mensagem(ns) no horário! Iniciando disparos...")
-            
-            for job in pending:
-                print(f"📤 Disparando agendamento {job.get('id')}...")
-                success = send_telegram(job)
-                
-                # Independente de sucesso ou falha (token errado, etc), 
-                # marcamos como enviado para não tentar enviar a mesma coisa infinitamente.
-                db.update({'sent': True}, Query().id == job['id'])
-                
-                if success:
-                    print(f"✅ Job {job.get('id')} enviado com sucesso.")
-                else:
-                    print(f"❌ Job {job.get('id')} falhou (verifique logs ou botão de teste).")
+            # Filtra mensagens pendentes
+            for doc in all_items:
+                if doc.get('type') == 'job' and doc.get('sent') == False:
+                    job_time = int(doc.get('time', 0))
                     
+                    # Se a hora chegou ou já passou (mesmo que por fuso horário)
+                    if job_time <= now_ms:
+                        print(f"⏰ Chegou o horário do envio (ID: {doc.get('id')})! Disparando...")
+                        
+                        # Tenta enviar
+                        success = send_telegram(doc)
+                        
+                        # Marca como enviado no banco de dados usando o ID interno (doc_id)
+                        # Isso garante que ele não tente enviar a mesma mensagem duas vezes
+                        db.update({'sent': True}, doc_ids=[doc.doc_id])
+                        
+                        if success:
+                            print("✅ Agendamento enviado com sucesso!")
+                        else:
+                            print("❌ Falha ao enviar agendamento. Verifique Token/ID.")
+                            
         except Exception as e:
-            print(f"⚠️ Erro no loop do robô: {e}")
+            print(f"⚠️ Erro no robô: {e}")
         
-        # Checa a cada 5 segundos para ser ultra preciso
+        # Checa a cada 5 segundos para ser ultra veloz
         time.sleep(5)
 
 def send_telegram(job):
     token = str(job.get('token', '')).strip()
     chat_id = str(job.get('chat', '')).strip()
-    # Corrige quebras de linha vindas do navegador
     text = job.get('text', '').replace('\\n', '\n')
     url = f"https://api.telegram.org/bot{token}/"
     
@@ -62,19 +64,12 @@ def send_telegram(job):
             payload['text'] = text
             r = requests.post(url + "sendMessage", data=payload, timeout=20)
 
-        if r.status_code == 200:
-            return True
-        else:
-            print(f"🔴 Resposta Errada do Telegram: {r.text}")
-            # Tenta enviar sem HTML se o erro for formatação
-            payload.pop('parse_mode', None)
-            requests.post(url + ("sendPhoto" if job.get('photo') else "sendMessage"), data=payload, timeout=10)
-            return False
+        return r.status_code == 200
     except Exception as e:
-        print(f"🔴 Erro de Conexão: {e}")
+        print(f"🔴 Erro de conexão: {e}")
         return False
 
-# --- ROTAS API ---
+# --- API ---
 @app.route('/')
 def index(): return render_template_string(HTML_CODE)
 
@@ -88,7 +83,7 @@ def manage_profiles():
 @app.route('/api/jobs')
 def get_jobs():
     user = request.args.get('user')
-    # Retorna apenas agendamentos futuros do perfil selecionado
+    # Retorna apenas o que não foi enviado ainda
     return jsonify([j for j in db.all() if j.get('user') == user and j.get('type') == 'job' and j.get('sent') == False])
 
 @app.route('/api/save', methods=['POST'])
@@ -105,6 +100,7 @@ def test_now():
 
 @app.route('/api/delete', methods=['POST'])
 def delete_job():
+    # Remove pelo ID gerado no agendamento
     db.remove(Query().id == request.json.get('id'))
     return jsonify({"status": "ok"})
 
@@ -125,7 +121,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Agendador VIP</title>
+    <title>Bot Telegram VIP</title>
     <style>
         :root { --primary: #0088cc; --bg: #f0f2f5; }
         body { font-family: 'Segoe UI', sans-serif; background: var(--bg); margin: 0; padding: 10px; }
@@ -134,41 +130,38 @@ HTML_CODE = """
         .p-20 { padding: 20px; }
         .hidden { display: none; }
         input, textarea, select { width: 100%; padding: 12px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
-        button { width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 8px; transition: 0.3s; }
+        button { width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 8px; }
         .btn-blue { background: var(--primary); color: white; }
         .btn-test { background: #28a745; color: white; }
         .btn-outline { background: white; border: 2px solid var(--primary); color: var(--primary); }
         .btn-admin { background: #6c757d; color: white; }
         .phrase-box { background: #f8f9fa; border: 1px solid #eee; padding: 10px; max-height: 100px; overflow-y: auto; margin-bottom: 10px; border-radius: 8px; }
         .phrase-item { font-size: 13px; padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
-        .job-card { border-left: 4px solid var(--primary); padding: 10px; background: #fff; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .btn-del { background: #ff4d4d; color: white; padding: 5px 10px; width: auto; margin: 0; }
+        .job-card { border-left: 4px solid var(--primary); padding: 10px; background: #fff; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .btn-del { background: #ff4d4d; color: white; padding: 5px 10px; width: auto; margin: 0; font-size: 14px; }
     </style>
 </head>
 <body>
 <div class="card">
-    <div class="header"><h2>Agendador Automático</h2></div>
+    <div class="header"><h2>Agendador de Marketing</h2></div>
     <div class="p-20">
-        <!-- LOGIN -->
         <div id="screen-login">
             <h3 style="text-align:center">Escolha seu Perfil</h3>
             <div id="profile-container"></div>
             <hr>
             <input type="text" id="new-profile-name" placeholder="Nome do perfil...">
             <button class="btn-blue" onclick="addProfile()">+ Criar Perfil</button>
-            <button class="btn-admin" onclick="openAdmin()">🛡️ Configurações Master</button>
+            <button class="btn-admin" onclick="openAdmin()">🛡️ Config Master</button>
         </div>
 
-        <!-- ADMIN -->
         <div id="screen-admin" class="hidden">
-            <h3>Configurações Globais</h3>
-            <label>Token do Bot:</label><input type="password" id="cfg-token">
+            <h3>Configurar Bot Principal</h3>
+            <label>Token:</label><input type="password" id="cfg-token">
             <label>ID do Canal:</label><input type="text" id="cfg-chat">
             <button class="btn-blue" onclick="saveAdmin()">SALVAR</button>
             <button class="btn-admin" onclick="location.reload()">VOLTAR</button>
         </div>
 
-        <!-- DASHBOARD -->
         <div id="screen-user" class="hidden">
             <div style="display:flex; justify-content: space-between; align-items: center;">
                 <strong id="user-display"></strong>
@@ -176,17 +169,17 @@ HTML_CODE = """
             </div>
             <hr>
             <div class="phrase-box" id="phrases-list"></div>
-            <textarea id="msg-text" rows="3" placeholder="Mensagem principal..."></textarea>
-            <input type="text" id="link-text" placeholder="Texto do Botão Link">
-            <input type="url" id="link-url" placeholder="URL do Link (https://...)">
-            <label>Foto:</label><input type="file" id="msg-photo" accept="image/*">
+            <textarea id="msg-text" rows="3" placeholder="Mensagem..."></textarea>
+            <input type="text" id="link-text" placeholder="Texto Link">
+            <input type="url" id="link-url" placeholder="URL Link">
+            <input type="file" id="msg-photo" accept="image/*">
             
             <div style="display:flex; gap:10px;">
-                <div style="flex:2"><label>Data Início:</label><input type="datetime-local" id="msg-date"></div>
-                <div style="flex:1"><label>Qtd Total:</label><input type="number" id="msg-total" value="1"></div>
+                <div style="flex:2"><label>Início:</label><input type="datetime-local" id="msg-date"></div>
+                <div style="flex:1"><label>Total:</label><input type="number" id="msg-total" value="1"></div>
             </div>
             
-            <label>Enviar a cada:</label>
+            <label>Intervalo:</label>
             <div style="display:flex; gap:5px;">
                 <input type="number" id="freq-val" value="30" style="flex:1">
                 <select id="freq-unit" style="flex:1">
@@ -244,12 +237,12 @@ HTML_CODE = """
 
     async function saveAdmin() {
         await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: document.getElementById('cfg-token').value, chat: document.getElementById('cfg-chat').value}) });
-        alert("Configurações Salvas!"); location.reload();
+        location.reload();
     }
 
     async function openUser(name) {
         config = await fetch('/api/config').then(r => r.json());
-        if(!config.token) return alert("Erro: Admin não configurou o BOT!");
+        if(!config.token) return alert("Erro: Configure o Bot no Admin!");
         currentUser = name;
         document.getElementById('screen-login').classList.add('hidden');
         document.getElementById('screen-user').classList.remove('hidden');
@@ -285,14 +278,14 @@ HTML_CODE = """
     async function testarAgora() {
         const data = await getBaseData();
         const res = await fetch('/api/test', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
-        alert(res.ok ? "✅ Teste enviado!" : "❌ Falha. Verifique Token/ID ou Admin do canal.");
+        alert(res.ok ? "✅ Teste enviado!" : "❌ Falha no teste.");
     }
 
     async function schedule() {
         const startInput = document.getElementById('msg-date').value;
         if(!startInput) return alert("Selecione data/hora!");
         
-        // Converte a data selecionada para Timestamp Milissegundos (Independente de fuso)
+        // Converte a hora do navegador para Timestamp Universal
         const start = new Date(startInput).getTime();
         const total = parseInt(document.getElementById('msg-total').value);
         const freqVal = parseFloat(document.getElementById('freq-val').value);
@@ -305,16 +298,15 @@ HTML_CODE = """
         const basePayload = await getBaseData();
 
         for(let i=0; i<total; i++) {
-            const sendTime = start + (i * interval);
             const data = {
                 ...basePayload,
                 id: Date.now() + i,
-                time: sendTime,
+                time: start + (i * interval),
                 sent: false
             };
             await fetch('/api/save', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
         }
-        alert("Agendamentos criados com sucesso!"); 
+        alert("Agendados!"); 
         updateHistory();
     }
 
@@ -326,7 +318,7 @@ HTML_CODE = """
                 <span>📅 ${new Date(j.time).toLocaleString()}</span>
                 <button class="btn-del" onclick="delJob(${j.id})">🗑️</button>
             </div>
-        `).join('') || "<p style='font-size:12px; color:gray;'>Nenhum agendamento pendente.</p>";
+        `).join('') || "<p style='font-size:12px; color:gray;'>Fila vazia.</p>";
     }
 
     async function delJob(id) {
@@ -343,7 +335,7 @@ HTML_CODE = """
 """
 
 if __name__ == '__main__':
-    # Inicia a thread do robô
+    # Inicia o robô em uma thread separada
     threading.Thread(target=bot_worker, daemon=True).start()
-    # Roda o Flask
+    # Roda o servidor Flask
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
